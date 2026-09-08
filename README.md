@@ -27,7 +27,7 @@ Os serviços previstos incluem preparação, martelinho de ouro e pintura. Um me
 ### Clientes
 
 - RF06 - Listar clientes em tabela ou grid.
-- RF07 - Buscar clientes por nome ou documento.
+- RF07 - Buscar clientes por nome ou CPF.
 - RF08 - Cadastrar um cliente com os campos obrigatórios.
 - RF09 - Editar os dados de um cliente.
 - RF10 - Excluir um cliente mediante confirmação.
@@ -69,14 +69,14 @@ erDiagram
 	CLIENTE {
 		bigint id PK
 		varchar nome
-		varchar documento UK
+		varchar cpf
 		varchar telefone
 		varchar email
 	}
 
 	ESTUFA {
 		bigint id PK
-		varchar nome UK
+		varchar nome
 		boolean ativa
 	}
 
@@ -90,24 +90,31 @@ erDiagram
 		varchar servico
 		varchar status
 	}
+
+	ADMIN {
+		bigint id PK
+		varchar email UK
+		varchar senha
+	}
 ```
 
 ### Entidades e regras
 
 | Entidade | Finalidade | Regras principais |
 | --- | --- | --- |
-| `cliente` | Armazena os clientes da oficina. | `documento` é obrigatório e único. `nome` também é obrigatório. |
-| `estufa` | Representa os recursos de pintura. | `nome` é obrigatório e único. Apenas estufas ativas podem receber novos agendamentos. |
+| `cliente` | Armazena os clientes da oficina. | `cpf` e `nome` são obrigatórios no formulário do frontend. |
+| `estufa` | Representa os recursos de pintura. | `nome` identifica a estufa. O frontend oferece apenas estufas ativas para novos agendamentos; a API ainda deve reforçar essa regra para chamadas diretas. |
 | `agendamento` | Registra o serviço reservado. | Deve referenciar um cliente e uma estufa existentes; data, horários e serviço são obrigatórios. |
+| `admin` | Armazena a credencial de acesso administrativo. | `email` é obrigatório e único; a senha é obrigatória. |
 
-O conflito ocorre quando dois agendamentos da mesma estufa e da mesma data possuem intervalos sobrepostos. Considerando intervalos semiabertos, a condição é:
+O conflito ocorre quando dois agendamentos da mesma estufa e da mesma data possuem intervalos sobrepostos. A API já valida essa condição e retorna `409 Conflict`. Considerando intervalos semiabertos, a condição é:
 
 ```text
 novo_inicio < agendamento_existente.fim
 e novo_fim > agendamento_existente.inicio
 ```
 
-Além da validação na aplicação, a operação de criação/alteração deve ser transacional para reduzir a possibilidade de reservas concorrentes. A API deve retornar `409 Conflict` quando encontrar uma sobreposição.
+Em uma evolução futura, a operação de criação/alteração deve ser transacional para reduzir a possibilidade de reservas concorrentes.
 
 ## Script de banco de dados para população
 
@@ -125,7 +132,7 @@ O projeto usa `spring.jpa.hibernate.ddl-auto=update` durante o desenvolvimento. 
 Para usar a carga inicial:
 
 1. Crie o banco vazio `saep_agendamento_db` no PostgreSQL.
-2. Inicie o backend uma vez para o Hibernate criar as tabelas.
+2. Inicie o backend uma vez para o Hibernate criar ou atualizar as tabelas `admin`, `cliente`, `estufa` e `agendamento`.
 3. Execute o script no banco `saep_agendamento_db` usando pgAdmin, DBeaver ou o `psql`:
 
 ```powershell
@@ -133,6 +140,17 @@ psql -U postgres -d saep_agendamento_db -f backend/src/main/resources/db/seed.sq
 ```
 
 O script de população não substitui a criação do banco. O banco precisa existir antes da inicialização do backend.
+
+## Endpoints principais
+
+| Método | Endpoint | Finalidade |
+| --- | --- | --- |
+| `POST` | `/api/admin/login` | Autenticar o administrador. |
+| `GET`, `POST`, `PUT`, `DELETE` | `/api/clientes` | CRUD de clientes. Use `?busca=nome-ou-cpf` no `GET`. |
+| `GET`, `POST`, `PUT`, `DELETE` | `/api/estufas` | CRUD de estufas. Use `?busca=nome` no `GET`. |
+| `GET`, `POST`, `PUT`, `DELETE` | `/api/agendamentos` | CRUD de agendamentos. Use `?data=AAAA-MM-DD` no `GET`. |
+
+O cadastro de agendamento recebe os IDs do cliente e da estufa no corpo da requisição. A API retorna `409 Conflict` quando detecta sobreposição de horários na mesma estufa e data.
 
 ## Como executar o projeto
 
@@ -189,20 +207,22 @@ npm test
 ```
 
 O comando do frontend executa os testes unitários configurados pelo Angular CLI/Vitest. O comando do backend executa os testes JUnit configurados no Gradle.
-F
+
+O teste de contexto do backend precisa de um PostgreSQL acessível com as credenciais configuradas em `application.properties`.
+
 ### Casos de teste recomendados
 
 | ID | Cenário | Resultado esperado |
 | --- | --- | --- |
 | CT01 | Fazer login com credenciais válidas. | Usuário autenticado e tela principal exibida. |
 | CT02 | Fazer login com credenciais inválidas. | Mensagem de erro exibida sem entrar no sistema. |
-| CT03 | Cadastrar cliente sem nome ou documento. | Formulário bloqueia o envio e informa os campos obrigatórios. |
-| CT04 | Buscar cliente por nome e por documento. | Apenas os registros correspondentes são exibidos. |
+| CT03 | Cadastrar cliente sem nome ou CPF. | Formulário bloqueia o envio e informa os campos obrigatórios. |
+| CT04 | Buscar cliente por nome ou CPF. | Apenas os registros correspondentes são exibidos. |
 | CT05 | Editar e excluir um cliente existente. | Alteração persistida; exclusão removida após confirmação. |
 | CT06 | Criar agendamento com cliente, data, hora e estufa válidos. | Agendamento criado e exibido na listagem. |
 | CT07 | Criar dois agendamentos sobrepostos para a mesma estufa e data. | Segundo agendamento recusado com alerta e resposta HTTP `409`. |
 | CT08 | Criar agendamentos no mesmo horário em estufas diferentes. | Ambos são aceitos. |
-| CT09 | Tentar agendar usando estufa inativa ou inexistente. | Operação recusada com erro de validação. |
+| CT09 | Tentar agendar usando estufa inexistente. | Operação recusada com erro de validação. |
 | CT10 | Fazer logout. | Sessão encerrada e usuário encaminhado para o login. |
 
 Para cada caso, registrar pré-condições, dados usados, passos executados, resultado obtido e resultado esperado. Os testes de conflito devem cobrir também o limite do intervalo: um agendamento que começa exatamente no horário final de outro não deve ser considerado sobreposto.
@@ -245,4 +265,5 @@ README.md                 Documentação do projeto
 - [x] Script de população com dados iniciais.
 - [x] Procedimentos e casos de teste documentados.
 - [x] Requisitos de infraestrutura documentados.
-- [ ] Implementação completa das telas e dos testes de integração.
+- [x] Interface Angular com login, dashboard, clientes e agendamentos.
+- [ ] Testes de integração do backend e autenticação segura com senha criptografada.
